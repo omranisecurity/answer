@@ -122,7 +122,10 @@ func (us *uploaderService) UploadAvatarFile(ctx *gin.Context, userID string) (ur
 	defer func() {
 		_ = file.Close()
 	}()
-	fileExt := strings.ToLower(path.Ext(fileHeader.Filename))
+	fileExt := safeLowerExtFromClientFilename(fileHeader.Filename)
+	if len(fileExt) == 0 {
+		return "", errors.BadRequest(reason.RequestFormatError)
+	}
 	if _, ok := plugin.DefaultFileTypeCheckMapping[plugin.UserAvatar][fileExt]; !ok {
 		return "", errors.BadRequest(reason.RequestFormatError).WithError(err)
 	}
@@ -138,22 +141,41 @@ func (us *uploaderService) UploadAvatarFile(ctx *gin.Context, userID string) (ur
 }
 
 func (us *uploaderService) AvatarThumbFile(ctx *gin.Context, fileName string, size int) (url string, err error) {
-	fileSuffix := path.Ext(fileName)
+	// fileName comes from request parameters; ensure it cannot contain path separators.
+	if containsPathSeparator(fileName) {
+		return "", errors.NotFound(reason.UnknownError)
+	}
+	fileName = filepath.Base(fileName)
+	if fileName == "." || fileName == "" {
+		return "", errors.NotFound(reason.UnknownError)
+	}
+
+	fileSuffix := strings.ToLower(filepath.Ext(fileName))
 	if _, ok := supportedThumbFileExtMapping[fileSuffix]; !ok {
 		// if file type is not supported, return original file
-		return path.Join(us.serviceConfig.UploadPath, constant.AvatarSubPath, fileName), nil
+		originalPath, jErr := safeJoinUnderBase(us.serviceConfig.UploadPath, path.Join(constant.AvatarSubPath, fileName))
+		if jErr != nil {
+			return "", errors.NotFound(reason.UnknownError)
+		}
+		return originalPath, nil
 	}
 	if size > 1024 {
 		size = 1024
 	}
 
 	thumbFileName := fmt.Sprintf("%d_%d@%s", size, size, fileName)
-	thumbFilePath := fmt.Sprintf("%s/%s/%s", us.serviceConfig.UploadPath, constant.AvatarThumbSubPath, thumbFileName)
+	thumbFilePath, jErr := safeJoinUnderBase(us.serviceConfig.UploadPath, path.Join(constant.AvatarThumbSubPath, thumbFileName))
+	if jErr != nil {
+		return "", errors.NotFound(reason.UnknownError)
+	}
 	_, err = os.ReadFile(thumbFilePath)
 	if err == nil {
 		return thumbFilePath, nil
 	}
-	filePath := fmt.Sprintf("%s/%s/%s", us.serviceConfig.UploadPath, constant.AvatarSubPath, fileName)
+	filePath, jErr := safeJoinUnderBase(us.serviceConfig.UploadPath, path.Join(constant.AvatarSubPath, fileName))
+	if jErr != nil {
+		return "", errors.NotFound(reason.UnknownError)
+	}
 	avatarFile, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", errors.NotFound(reason.UnknownError).WithError(err)
@@ -175,7 +197,10 @@ func (us *uploaderService) AvatarThumbFile(ctx *gin.Context, fileName string, si
 	}
 
 	avatarFilePath := path.Join(constant.AvatarThumbSubPath, thumbFileName)
-	saveFilePath := path.Join(us.serviceConfig.UploadPath, avatarFilePath)
+	saveFilePath, jErr := safeJoinUnderBase(us.serviceConfig.UploadPath, avatarFilePath)
+	if jErr != nil {
+		return "", errors.InternalServer(reason.UnknownError).WithError(jErr).WithStack()
+	}
 	out, err := os.Create(saveFilePath)
 	if err != nil {
 		return "", errors.InternalServer(reason.UnknownError).WithError(err).WithStack()
@@ -214,11 +239,14 @@ func (us *uploaderService) UploadPostFile(ctx *gin.Context, userID string) (
 	defer func() {
 		_ = file.Close()
 	}()
-	if checker.IsUnAuthorizedExtension(fileHeader.Filename, siteWrite.AuthorizedImageExtensions) {
+	if checker.IsUnAuthorizedExtension(filepath.Base(fileHeader.Filename), siteWrite.AuthorizedImageExtensions) {
 		return "", errors.BadRequest(reason.RequestFormatError).WithError(err)
 	}
 
-	fileExt := strings.ToLower(path.Ext(fileHeader.Filename))
+	fileExt := safeLowerExtFromClientFilename(fileHeader.Filename)
+	if len(fileExt) == 0 {
+		return "", errors.BadRequest(reason.RequestFormatError)
+	}
 	newFilename := fmt.Sprintf("%s%s", uid.IDStr12(), fileExt)
 	avatarFilePath := path.Join(constant.PostSubPath, newFilename)
 	url, err = us.uploadImageFile(ctx, fileHeader, avatarFilePath)
@@ -252,14 +280,18 @@ func (us *uploaderService) UploadPostAttachment(ctx *gin.Context, userID string)
 	defer func() {
 		_ = file.Close()
 	}()
-	if checker.IsUnAuthorizedExtension(fileHeader.Filename, resp.AuthorizedAttachmentExtensions) {
+	originalFilename := filepath.Base(fileHeader.Filename)
+	if checker.IsUnAuthorizedExtension(originalFilename, resp.AuthorizedAttachmentExtensions) {
 		return "", errors.BadRequest(reason.RequestFormatError).WithError(err)
 	}
 
-	fileExt := strings.ToLower(path.Ext(fileHeader.Filename))
+	fileExt := safeLowerExtFromClientFilename(fileHeader.Filename)
+	if len(fileExt) == 0 {
+		return "", errors.BadRequest(reason.RequestFormatError)
+	}
 	newFilename := fmt.Sprintf("%s%s", uid.IDStr12(), fileExt)
 	attachmentFilePath := path.Join(constant.FilesPostSubPath, newFilename)
-	url, err = us.uploadAttachmentFile(ctx, fileHeader, fileHeader.Filename, attachmentFilePath)
+	url, err = us.uploadAttachmentFile(ctx, fileHeader, originalFilename, attachmentFilePath)
 	if err != nil {
 		return "", err
 	}
@@ -290,7 +322,10 @@ func (us *uploaderService) UploadBrandingFile(ctx *gin.Context, userID string) (
 	defer func() {
 		_ = file.Close()
 	}()
-	fileExt := strings.ToLower(path.Ext(fileHeader.Filename))
+	fileExt := safeLowerExtFromClientFilename(fileHeader.Filename)
+	if len(fileExt) == 0 {
+		return "", errors.BadRequest(reason.RequestFormatError)
+	}
 	if _, ok := plugin.DefaultFileTypeCheckMapping[plugin.AdminBranding][fileExt]; !ok {
 		return "", errors.BadRequest(reason.RequestFormatError).WithError(err)
 	}
@@ -315,7 +350,10 @@ func (us *uploaderService) uploadImageFile(ctx *gin.Context, file *multipart.Fil
 	if err != nil {
 		return "", err
 	}
-	filePath := path.Join(us.serviceConfig.UploadPath, fileSubPath)
+	filePath, jErr := safeJoinUnderBase(us.serviceConfig.UploadPath, fileSubPath)
+	if jErr != nil {
+		return "", errors.BadRequest(reason.RequestFormatError).WithError(jErr)
+	}
 	if err := ctx.SaveUploadedFile(file, filePath); err != nil {
 		return "", errors.InternalServer(reason.UnknownError).WithError(err).WithStack()
 	}
@@ -346,7 +384,10 @@ func (us *uploaderService) uploadAttachmentFile(ctx *gin.Context, file *multipar
 	if err != nil {
 		return "", err
 	}
-	filePath := path.Join(us.serviceConfig.UploadPath, fileSubPath)
+	filePath, jErr := safeJoinUnderBase(us.serviceConfig.UploadPath, fileSubPath)
+	if jErr != nil {
+		return "", errors.BadRequest(reason.RequestFormatError).WithError(jErr)
+	}
 	if err := ctx.SaveUploadedFile(file, filePath); err != nil {
 		return "", errors.InternalServer(reason.UnknownError).WithError(err).WithStack()
 	}
@@ -405,4 +446,53 @@ func removeExif(path string) error {
 		return err
 	}
 	return os.WriteFile(path, noExifBytes, 0644)
+}
+
+func safeLowerExtFromClientFilename(filename string) string {
+	base := filepath.Base(filename)
+	if base == "." || base == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.Ext(base))
+}
+
+func containsPathSeparator(s string) bool {
+	return strings.Contains(s, "/") || strings.Contains(s, "\\")
+}
+
+// safeJoinUnderBase joins a (possibly slash-separated) subpath under baseDir and
+// rejects path traversal / absolute paths.
+func safeJoinUnderBase(baseDir, subPath string) (string, error) {
+	if len(baseDir) == 0 {
+		return "", fmt.Errorf("baseDir is empty")
+	}
+	if len(subPath) == 0 {
+		return "", fmt.Errorf("subPath is empty")
+	}
+	if filepath.IsAbs(subPath) {
+		return "", fmt.Errorf("absolute subPath is not allowed")
+	}
+
+	// fileSubPath values in this package use forward slashes; convert to OS separator.
+	subPath = filepath.FromSlash(subPath)
+
+	baseClean := filepath.Clean(baseDir)
+	joined := filepath.Join(baseClean, filepath.Clean(subPath))
+
+	baseAbs, err := filepath.Abs(baseClean)
+	if err != nil {
+		return "", err
+	}
+	joinedAbs, err := filepath.Abs(joined)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(baseAbs, joinedAbs)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path traversal detected")
+	}
+	return joined, nil
 }
