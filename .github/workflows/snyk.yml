@@ -1,0 +1,122 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Snyk Security Scan
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: "0 3 * * 1" # weekly (Mon 03:00 UTC)
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  snyk-go:
+    name: Snyk (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.SNYK_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snyk test (Go dependencies)
+        uses: snyk/actions/golang@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: --file=go.mod --severity-threshold=high
+      - name: Snyk monitor (Go dependencies)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: snyk/actions/golang@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          args: --file=go.mod
+
+  snyk-ui:
+    name: Snyk (UI / pnpm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.SNYK_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snyk test (UI dependencies)
+        uses: snyk/actions/node@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: --file=ui/package.json --package-manager=pnpm --severity-threshold=high
+      - name: Snyk monitor (UI dependencies)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: snyk/actions/node@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          args: --file=ui/package.json --package-manager=pnpm
+
+  snyk-iac:
+    name: Snyk (IaC / Helm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.SNYK_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snyk IaC test (Helm chart)
+        uses: snyk/actions/iac@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          file: charts
+
+  snyk-docker:
+    name: Snyk (Docker image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ secrets.SNYK_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scan
+        run: docker build -t answer:snyk-scan .
+      - name: Snyk test (Docker image)
+        uses: snyk/actions/docker@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          image: answer:snyk-scan
+          args: --severity-threshold=high
+      - name: Snyk monitor (Docker image)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: snyk/actions/docker@v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          image: answer:snyk-scan
