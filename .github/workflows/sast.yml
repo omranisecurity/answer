@@ -12,5 +12,4 @@ jobs:
         with:
           command: code test
           args:
-            --json
             --include-ignores
